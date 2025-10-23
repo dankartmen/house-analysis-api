@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  api:
+    build: .  # Сборка из Dockerfile в текущей директории
+    ports:
+      - "8000:8000"  # Прокидываем порт 8000 на хост
+    volumes:
+      - ./houses.csv:/app/houses.csv  # Монтируем данные (для dev; в проде — в образ)
+    environment:
+      - PYTHONUNBUFFERED=1  # Для логов
+    restart: unless-stopped  # Авторестарт
