@@ -1,11 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LinearRegression, Lasso, Ridge
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.linear_model import LinearRegression, Lasso, Ridge,LogisticRegression
+from sklearn.preprocessing import PolynomialFeatures, StandardScaler
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, precision_score, recall_score, f1_score, roc_auc_score, roc_curve, classification_report
 from sklearn.pipeline import Pipeline
+from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
+import pandas as pd
 import numpy as np
 
 
@@ -32,19 +32,19 @@ lr = LinearRegression()
 lr.fit(X_train, y_train)
 models['Linear Regression'] = lr
 
-# 2. LASSO (alpha=1.0 по умолчанию)
+# 2. LASSO 
 lasso = Lasso(alpha=1.0)
 lasso.fit(X_train, y_train)
 models['LASSO Regression'] = lasso
 
-# 3. Ridge (alpha=1.0)
+# 3. Ridge 
 ridge = Ridge(alpha=1.0)
 ridge.fit(X_train, y_train)
 models['Ridge Regression'] = ridge
 
-# 4. Polynomial (степень 2, с LinearRegression)
+# 4. Polynomial 
 poly = Pipeline([('poly', PolynomialFeatures(degree=2)), ('linear', LinearRegression())])
-poly.fit(X_train, y_train)  # Полное обучение pipeline на raw данных
+poly.fit(X_train, y_train)  
 models['Polynomial Regression'] = poly
 
 # Функция для метрик
@@ -125,4 +125,108 @@ def get_metrics():
             "residuals_x": pred_lin_for_res,
             "residuals_y": residuals_lin
         },
+    }
+
+# Загрузка данных о мошенничестве
+fraud_df = pd.read_csv('creditcard.csv')
+
+# Подготовка данных для мошенничества
+X_fraud = fraud_df.drop(['Class', 'Time'], axis=1)  # Исключаем Time и целевую переменную
+y_fraud = fraud_df['Class']
+
+# Скалярная стандартизация
+scaler = StandardScaler()
+X_fraud_scaled = scaler.fit_transform(X_fraud)
+
+# Разбиение на обучающую и тестовую выборки
+X_fraud_train, X_fraud_test, y_fraud_train, y_fraud_test = train_test_split(
+    X_fraud_scaled, y_fraud, test_size=0.3, random_state=42, stratify=y_fraud
+)
+
+# Обучение модели логистической регрессии
+logreg = LogisticRegression(random_state=42, max_iter=1000)
+logreg.fit(X_fraud_train, y_fraud_train)
+
+# Предсказания
+y_fraud_pred = logreg.predict(X_fraud_test)
+y_fraud_pred_proba = logreg.predict_proba(X_fraud_test)[:, 1]
+
+# Метрики без кросс-валидации
+precision = precision_score(y_fraud_test, y_fraud_pred)
+recall = recall_score(y_fraud_test, y_fraud_pred)
+f1 = f1_score(y_fraud_test, y_fraud_pred)
+roc_auc = roc_auc_score(y_fraud_test, y_fraud_pred_proba)
+
+# ROC curve data
+fpr, tpr, thresholds = roc_curve(y_fraud_test, y_fraud_pred_proba)
+
+# Кросс-валидация
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+cv_precision = cross_val_score(logreg, X_fraud_scaled, y_fraud, cv=cv, scoring='precision')
+cv_recall = cross_val_score(logreg, X_fraud_scaled, y_fraud, cv=cv, scoring='recall')
+cv_f1 = cross_val_score(logreg, X_fraud_scaled, y_fraud, cv=cv, scoring='f1')
+cv_roc_auc = cross_val_score(logreg, X_fraud_scaled, y_fraud, cv=cv, scoring='roc_auc')
+
+# Статистика по классам
+class_distribution = fraud_df['Class'].value_counts().to_dict()
+fraud_percentage = (class_distribution[1] / len(fraud_df)) * 100
+
+@app.get("/api/fraud-analysis")
+def get_fraud_analysis():
+    return {
+        "dataset_info": {
+            "total_samples": len(fraud_df),
+            "normal_transactions": class_distribution[0],
+            "fraud_transactions": class_distribution[1],
+            "fraud_percentage": round(fraud_percentage, 4),
+            "features_used": X_fraud.shape[1],
+            "feature_names": X_fraud.columns.tolist()
+        },
+        "model_info": {
+            "model_type": "Logistic Regression",
+            "standardization": "StandardScaler applied",
+            "test_size": 0.3,
+            "random_state": 42
+        },
+        "metrics_without_cv": {
+            "precision": round(precision, 4),
+            "recall": round(recall, 4),
+            "f1_score": round(f1, 4),
+            "roc_auc": round(roc_auc, 4)
+        },
+        "metrics_with_cv": {
+            "precision": {
+                "mean": round(cv_precision.mean(), 4),
+                "std": round(cv_precision.std(), 4),
+                "values": cv_precision.tolist()
+            },
+            "recall": {
+                "mean": round(cv_recall.mean(), 4),
+                "std": round(cv_recall.std(), 4),
+                "values": cv_recall.tolist()
+            },
+            "f1_score": {
+                "mean": round(cv_f1.mean(), 4),
+                "std": round(cv_f1.std(), 4),
+                "values": cv_f1.tolist()
+            },
+            "roc_auc": {
+                "mean": round(cv_roc_auc.mean(), 4),
+                "std": round(cv_roc_auc.std(), 4),
+                "values": cv_roc_auc.tolist()
+            }
+        },
+        "roc_curve": {
+            "fpr": fpr.tolist(),
+            "tpr": tpr.tolist(),
+            "thresholds": thresholds.tolist()
+        },
+        "feature_importance": {
+            "top_features": dict(zip(X_fraud.columns, logreg.coef_[0])),
+            "most_important": sorted(
+                [(feature, abs(weight)) for feature, weight in zip(X_fraud.columns, logreg.coef_[0])],
+                key=lambda x: x[1], 
+                reverse=True
+            )[:10]
+        }
     }
