@@ -1,53 +1,68 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sklearn.linear_model import LinearRegression, Lasso, Ridge,LogisticRegression
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression, Lasso, Ridge, LogisticRegression
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, precision_score, recall_score, f1_score, roc_auc_score, roc_curve, classification_report
+from sklearn.model_selection import cross_val_score, StratifiedKFold
 from sklearn.pipeline import Pipeline
-from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
-import pandas as pd
 import numpy as np
-
 
 app = FastAPI()
 
+# Добавляем CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # В продакшене заменить на конкретные домены
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# Загрузка данных
-df = pd.read_csv('kc_house_data.csv', quotechar='"')  
-df['date'] = pd.to_datetime(df['date'], format='%Y%m%dT%H%M%S') 
-numeric_features = ['bedrooms', 'bathrooms', 'sqft_living', 'sqft_lot', 'floors', 
-                    'condition', 'grade', 'sqft_above', 'sqft_basement', 'yr_built', 
-                    'yr_renovated', 'lat', 'long', 'sqft_living15', 'sqft_lot15']
-X = df[numeric_features].fillna(0)
-y = df['price']
+# Загрузка данных о домах
+try:
+    df = pd.read_csv('kc_house_data.csv', quotechar='"')  
+    df['date'] = pd.to_datetime(df['date'], format='%Y%m%dT%H%M%S') 
+    numeric_features = ['bedrooms', 'bathrooms', 'sqft_living', 'sqft_lot', 'floors', 
+                        'condition', 'grade', 'sqft_above', 'sqft_basement', 'yr_built', 
+                        'yr_renovated', 'lat', 'long', 'sqft_living15', 'sqft_lot15']
+    X = df[numeric_features].fillna(0)
+    y = df['price']
 
-X_temp, X_test, y_temp, y_test = train_test_split(X, y, test_size=0.15, random_state=42)
-X_train, X_val, y_train, y_val = train_test_split(X_temp, y_temp, test_size=0.1765, random_state=42)
+    X_temp, X_test, y_temp, y_test = train_test_split(X, y, test_size=0.15, random_state=42)
+    X_train, X_val, y_train, y_val = train_test_split(X_temp, y_temp, test_size=0.1765, random_state=42)
 
-# Обучение моделей
-models = {}
+    # Обучение моделей для домов
+    models = {}
 
-# 1. Linear Regression
-lr = LinearRegression()
-lr.fit(X_train, y_train)
-models['Linear Regression'] = lr
+    # 1. Linear Regression
+    lr = LinearRegression()
+    lr.fit(X_train, y_train)
+    models['Linear Regression'] = lr
 
-# 2. LASSO 
-lasso = Lasso(alpha=1.0)
-lasso.fit(X_train, y_train)
-models['LASSO Regression'] = lasso
+    # 2. LASSO 
+    lasso = Lasso(alpha=1.0)
+    lasso.fit(X_train, y_train)
+    models['LASSO Regression'] = lasso
 
-# 3. Ridge 
-ridge = Ridge(alpha=1.0)
-ridge.fit(X_train, y_train)
-models['Ridge Regression'] = ridge
+    # 3. Ridge 
+    ridge = Ridge(alpha=1.0)
+    ridge.fit(X_train, y_train)
+    models['Ridge Regression'] = ridge
 
-# 4. Polynomial 
-poly = Pipeline([('poly', PolynomialFeatures(degree=2)), ('linear', LinearRegression())])
-poly.fit(X_train, y_train)  
-models['Polynomial Regression'] = poly
+    # 4. Polynomial 
+    poly = Pipeline([('poly', PolynomialFeatures(degree=2)), ('linear', LinearRegression())])
+    poly.fit(X_train, y_train)  
+    models['Polynomial Regression'] = poly
 
-# Функция для метрик
+    house_models_loaded = True
+except Exception as e:
+    print(f"Error loading house data: {e}")
+    house_models_loaded = False
+    models = {}
+
+# Функция для метрик домов
 def compute_metrics(model, X_train, y_train, X_test, y_test, model_name):
     y_train_pred = model.predict(X_train)
     y_test_pred = model.predict(X_test)
@@ -66,50 +81,107 @@ def compute_metrics(model, X_train, y_train, X_test, y_test, model_name):
         'test': {'R2': test_r2, "MAE": test_mae, 'MSE': test_mse}
     }
 
-# Вычисление метрик
-metrics = [compute_metrics(model, X_train, y_train, X_test, y_test, name) 
-           for name, model in models.items()]
+# Загрузка данных о мошенничестве
+try:
+    fraud_df = pd.read_csv('creditcard.csv')
 
-# Данные для графиков (для Linear: actual vs pred, residuals)
-y_test_actual = y_test.tolist()
-y_test_pred_lin = lr.predict(X_test).tolist()
-residuals_lin = (y_test - y_test_pred_lin).tolist()
-pred_lin_for_res = y_test_pred_lin
+    # Подготовка данных для мошенничества
+    X_fraud = fraud_df.drop(['Class', 'Time'], axis=1)  # Исключаем Time и целевую переменную
+    y_fraud = fraud_df['Class']
 
-feature_importance = dict(zip(numeric_features, lr.coef_))
-top_features = sorted(feature_importance.items(), key=lambda x: abs(x[1]), reverse=True)[:4]
+    # Скалярная стандартизация
+    scaler = StandardScaler()
+    X_fraud_scaled = scaler.fit_transform(X_fraud)
 
-results = {m['model']: m for m in metrics}
-best_model = max(results.values(), key=lambda x: x['test']['R2'])
+    # Разбиение на обучающую и тестовую выборки
+    X_fraud_train, X_fraud_test, y_fraud_train, y_fraud_test = train_test_split(
+        X_fraud_scaled, y_fraud, test_size=0.3, random_state=42, stratify=y_fraud
+    )
 
-conclusions = {
-    'influence': [
-        f" - Жилая площадь: наибольшее влияние на цену (коэф. {feature_importance['sqft_living']:.2f})",
-        f" - Количество ванных комнат: сильное влияние (коэф. {feature_importance['bathrooms']:.2f})",
-        f" - Год постройки: более новые дома дороже (коэф. {feature_importance['yr_built']:.2f})",
-        f" - Вид на воду: значительно увеличивает стоимость "
-    ],
-    'best_model': f"Лучшая модель: {best_model['model']} (R² test = {best_model['test']['R2']:.4f})",
-    'quality': [
-        f" - {m['model']}: разница R² = {m['train']['R2'] - m['test']['R2']:.4f} ({'возможное переобучение' if (m['train']['R2'] - m['test']['R2']) > 0.1 else 'норма' if (m['train']['R2'] - m['test']['R2']) > 0.05 else 'хорошо'})"
-        for m in metrics
-    ]
-}
+    # Обучение модели логистической регрессии
+    logreg = LogisticRegression(random_state=42, max_iter=1000)
+    logreg.fit(X_fraud_train, y_fraud_train)
 
-# Описания моделей
-descriptions = {
-    'Linear Regression': 'Простая линейная модель: y = Xβ + ε. Минимизирует сумму квадратов ошибок.',
-    'LASSO Regression': 'L1-регуляризация: добавляет штраф |β|, обнуляет ненужные коэффициенты (feature selection).',
-    'Ridge Regression': 'L2-регуляризация: добавляет штраф β², сжимает коэффициенты, борется с мультиколлинеарностью.',
-    'Polynomial Regression': 'Линейная регрессия на полиномиальных фичах (степень 2): захватывает нелинейности.'
-}
+    # Предсказания
+    y_fraud_pred = logreg.predict(X_fraud_test)
+    y_fraud_pred_proba = logreg.predict_proba(X_fraud_test)[:, 1]
+
+    # Метрики без кросс-валидации
+    precision = precision_score(y_fraud_test, y_fraud_pred)
+    recall = recall_score(y_fraud_test, y_fraud_pred)
+    f1 = f1_score(y_fraud_test, y_fraud_pred)
+    roc_auc = roc_auc_score(y_fraud_test, y_fraud_pred_proba)
+
+    # ROC curve data
+    fpr, tpr, thresholds = roc_curve(y_fraud_test, y_fraud_pred_proba)
+
+    # Кросс-валидация
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    cv_precision = cross_val_score(logreg, X_fraud_scaled, y_fraud, cv=cv, scoring='precision')
+    cv_recall = cross_val_score(logreg, X_fraud_scaled, y_fraud, cv=cv, scoring='recall')
+    cv_f1 = cross_val_score(logreg, X_fraud_scaled, y_fraud, cv=cv, scoring='f1')
+    cv_roc_auc = cross_val_score(logreg, X_fraud_scaled, y_fraud, cv=cv, scoring='roc_auc')
+
+    # Статистика по классам
+    class_distribution = fraud_df['Class'].value_counts().to_dict()
+    fraud_percentage = (class_distribution[1] / len(fraud_df)) * 100
+
+    fraud_analysis_loaded = True
+except Exception as e:
+    print(f"Error loading fraud data: {e}")
+    fraud_analysis_loaded = False
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "models_loaded": len(models)}
+    return {
+        "status": "healthy", 
+        "house_models_loaded": house_models_loaded,
+        "fraud_analysis_loaded": fraud_analysis_loaded
+    }
 
 @app.get("/api/metrics")
 def get_metrics():
+    if not house_models_loaded:
+        return {"error": "House data not loaded"}
+    
+    # Вычисление метрик для домов
+    metrics = [compute_metrics(model, X_train, y_train, X_test, y_test, name) 
+               for name, model in models.items()]
+
+    # Данные для графиков (для Linear: actual vs pred, residuals)
+    y_test_actual = y_test.tolist()
+    y_test_pred_lin = lr.predict(X_test).tolist()
+    residuals_lin = (y_test - y_test_pred_lin).tolist()
+    pred_lin_for_res = y_test_pred_lin
+
+    feature_importance = dict(zip(numeric_features, lr.coef_))
+    top_features = sorted(feature_importance.items(), key=lambda x: abs(x[1]), reverse=True)[:4]
+
+    results = {m['model']: m for m in metrics}
+    best_model = max(results.values(), key=lambda x: x['test']['R2'])
+
+    conclusions = {
+        'influence': [
+            f" - Жилая площадь: наибольшее влияние на цену (коэф. {feature_importance['sqft_living']:.2f})",
+            f" - Количество ванных комнат: сильное влияние (коэф. {feature_importance['bathrooms']:.2f})",
+            f" - Год постройки: более новые дома дороже (коэф. {feature_importance['yr_built']:.2f})",
+            f" - Вид на воду: значительно увеличивает стоимость "
+        ],
+        'best_model': f"Лучшая модель: {best_model['model']} (R² test = {best_model['test']['R2']:.4f})",
+        'quality': [
+            f" - {m['model']}: разница R² = {m['train']['R2'] - m['test']['R2']:.4f} ({'возможное переобучение' if (m['train']['R2'] - m['test']['R2']) > 0.1 else 'норма' if (m['train']['R2'] - m['test']['R2']) > 0.05 else 'хорошо'})"
+            for m in metrics
+        ]
+    }
+
+    # Описания моделей
+    descriptions = {
+        'Linear Regression': 'Простая линейная модель: y = Xβ + ε. Минимизирует сумму квадратов ошибок.',
+        'LASSO Regression': 'L1-регуляризация: добавляет штраф |β|, обнуляет ненужные коэффициенты (feature selection).',
+        'Ridge Regression': 'L2-регуляризация: добавляет штраф β², сжимает коэффициенты, борется с мультиколлинеарностью.',
+        'Polynomial Regression': 'Линейная регрессия на полиномиальных фичах (степень 2): захватывает нелинейности.'
+    }
+
     return {
         "descriptions": descriptions,
         "metrics": metrics,
@@ -127,52 +199,11 @@ def get_metrics():
         },
     }
 
-# Загрузка данных о мошенничестве
-fraud_df = pd.read_csv('creditcard.csv')
-
-# Подготовка данных для мошенничества
-X_fraud = fraud_df.drop(['Class', 'Time'], axis=1)  # Исключаем Time и целевую переменную
-y_fraud = fraud_df['Class']
-
-# Скалярная стандартизация
-scaler = StandardScaler()
-X_fraud_scaled = scaler.fit_transform(X_fraud)
-
-# Разбиение на обучающую и тестовую выборки
-X_fraud_train, X_fraud_test, y_fraud_train, y_fraud_test = train_test_split(
-    X_fraud_scaled, y_fraud, test_size=0.3, random_state=42, stratify=y_fraud
-)
-
-# Обучение модели логистической регрессии
-logreg = LogisticRegression(random_state=42, max_iter=1000)
-logreg.fit(X_fraud_train, y_fraud_train)
-
-# Предсказания
-y_fraud_pred = logreg.predict(X_fraud_test)
-y_fraud_pred_proba = logreg.predict_proba(X_fraud_test)[:, 1]
-
-# Метрики без кросс-валидации
-precision = precision_score(y_fraud_test, y_fraud_pred)
-recall = recall_score(y_fraud_test, y_fraud_pred)
-f1 = f1_score(y_fraud_test, y_fraud_pred)
-roc_auc = roc_auc_score(y_fraud_test, y_fraud_pred_proba)
-
-# ROC curve data
-fpr, tpr, thresholds = roc_curve(y_fraud_test, y_fraud_pred_proba)
-
-# Кросс-валидация
-cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-cv_precision = cross_val_score(logreg, X_fraud_scaled, y_fraud, cv=cv, scoring='precision')
-cv_recall = cross_val_score(logreg, X_fraud_scaled, y_fraud, cv=cv, scoring='recall')
-cv_f1 = cross_val_score(logreg, X_fraud_scaled, y_fraud, cv=cv, scoring='f1')
-cv_roc_auc = cross_val_score(logreg, X_fraud_scaled, y_fraud, cv=cv, scoring='roc_auc')
-
-# Статистика по классам
-class_distribution = fraud_df['Class'].value_counts().to_dict()
-fraud_percentage = (class_distribution[1] / len(fraud_df)) * 100
-
 @app.get("/api/fraud-analysis")
 def get_fraud_analysis():
+    if not fraud_analysis_loaded:
+        return {"error": "Fraud data not loaded"}
+    
     return {
         "dataset_info": {
             "total_samples": len(fraud_df),
