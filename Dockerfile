@@ -14,8 +14,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем код и данные
+# Копируем код и ВСЕ данные
 COPY main.py .
+COPY kc_house_data.csv .
+COPY creditcard.csv .
 COPY houses.csv .
 
 # Запуск uvicorn (ASGI-сервер)

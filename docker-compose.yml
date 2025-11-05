@@ -7,6 +7,8 @@ services:
       - "8000:8000"  # Прокидываем порт 8000 на хост
     volumes:
       - ./houses.csv:/app/houses.csv  # Монтируем данные (для dev; в проде — в образ)
+      - ./kc_house_data.csv:/app/kc_house_data.csv  # Добавляем недостающие файлы
+      - ./creditcard.csv:/app/creditcard.csv
     environment:
       - PYTHONUNBUFFERED=1  # Для логов
     restart: unless-stopped  # Авторестарт
