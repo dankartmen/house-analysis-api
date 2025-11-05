@@ -83,20 +83,28 @@ def compute_metrics(model, X_train, y_train, X_test, y_test, model_name):
 
 # Загрузка данных о мошенничестве
 try:
-    fraud_df = pd.read_csv('creditcard.csv')
-
-    # Подготовка данных для мошенничества
-    X_fraud = fraud_df.drop(['Class', 'Time'], axis=1)  # Исключаем Time и целевую переменную
+    # Оптимизированные типы данных
+    dtypes = {f'V{i}': np.float32 for i in range(1, 29)}
+    dtypes['Time'] = np.float32
+    dtypes['Amount'] = np.float32  
+    dtypes['Class'] = np.int8
+    
+    fraud_df = pd.read_csv('creditcard.csv', dtype=dtypes)
+    fraud_df = fraud_df.drop('Time', axis=1)  # Удаляем сразу
+    
+    # Подготовка данных
+    X_fraud = fraud_df.drop('Class', axis=1)
     y_fraud = fraud_df['Class']
-
-    # Скалярная стандартизация
+    
+    # Оптимизированный StandardScaler
     scaler = StandardScaler()
-    X_fraud_scaled = scaler.fit_transform(X_fraud)
-
-    # Разбиение на обучающую и тестовую выборки
+    X_fraud_scaled = scaler.fit_transform(X_fraud).astype(np.float32)
+    
+    # Уменьшить test_size для экономии памяти
     X_fraud_train, X_fraud_test, y_fraud_train, y_fraud_test = train_test_split(
-        X_fraud_scaled, y_fraud, test_size=0.3, random_state=42, stratify=y_fraud
+        X_fraud_scaled, y_fraud, test_size=0.2, random_state=42, stratify=y_fraud  # было 0.3
     )
+    
 
     # Обучение модели логистической регрессии
     logreg = LogisticRegression(random_state=42, max_iter=1000)
@@ -116,7 +124,7 @@ try:
     fpr, tpr, thresholds = roc_curve(y_fraud_test, y_fraud_pred_proba)
 
     # Кросс-валидация
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
     cv_precision = cross_val_score(logreg, X_fraud_scaled, y_fraud, cv=cv, scoring='precision')
     cv_recall = cross_val_score(logreg, X_fraud_scaled, y_fraud, cv=cv, scoring='recall')
     cv_f1 = cross_val_score(logreg, X_fraud_scaled, y_fraud, cv=cv, scoring='f1')
