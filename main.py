@@ -8,7 +8,21 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, p
 from sklearn.model_selection import cross_val_score, StratifiedKFold
 from sklearn.pipeline import Pipeline
 import numpy as np
+import math
 
+def clean_json_data(obj):
+    """Рекурсивно очищает данные от некорректных float значений"""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return 0.0  # или None
+        return obj
+    elif isinstance(obj, dict):
+        return {k: clean_json_data(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [clean_json_data(item) for item in obj]
+    else:
+        return obj
+    
 app = FastAPI()
 
 # Добавляем CORS middleware
@@ -212,7 +226,7 @@ def get_fraud_analysis():
     if not fraud_analysis_loaded:
         return {"error": "Fraud data not loaded"}
     
-    return {
+    result = {
         "dataset_info": {
             "total_samples": len(fraud_df),
             "normal_transactions": class_distribution[0],
@@ -269,3 +283,6 @@ def get_fraud_analysis():
             )[:10]
         }
     }
+    
+    # ОЧИСТКА ДАННЫХ ПЕРЕД ВОЗВРАТОМ
+    return clean_json_data(result)
