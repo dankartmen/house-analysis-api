@@ -296,17 +296,32 @@ def get_heart_attack_analysis():
         # Загрузка данных
         heart_df = pd.read_csv('heart_attack_prediction_dataset.csv')
         
-        # Удаление некоррелирующих признаков
-        numeric_columns = ['age', 'cholesterol', 'heartRate', 'exerciseHoursPerWeek', 
-                          'stressLevel', 'sedentaryHoursPerDay', 'income', 'bmi', 
-                          'triglycerides', 'physicalActivityDaysPerWeek', 'sleepHoursPerDay']
+        # Определяем числовые колонки динамически
+        numeric_columns = []
+        for col in heart_df.columns:
+            if col != 'Patient ID' and col != 'Heart Attack Risk':
+                try:
+                    # Пробуем преобразовать в число
+                    pd.to_numeric(heart_df[col])
+                    numeric_columns.append(col)
+                except (ValueError, TypeError):
+                    # Если не получается, пропускаем (это категориальная колонка)
+                    continue
+        
+        # Добавляем целевую переменную
+        target_column = 'Heart Attack Risk'
+        
+        print(f"Найдены числовые колонки: {numeric_columns}")
+        print(f"Целевая переменная: {target_column}")
         
         # Вычисляем корреляцию с целевой переменной
-        correlations = heart_df[numeric_columns + ['heartAttackRisk']].corr()['heartAttackRisk'].abs()
+        correlations = heart_df[numeric_columns + [target_column]].corr()[target_column].abs()
         
         # Удаляем признаки с низкой корреляцией (< 0.05)
         low_corr_features = correlations[correlations < 0.05].index.tolist()
-        low_corr_features = [f for f in low_corr_features if f != 'heartAttackRisk']
+        low_corr_features = [f for f in low_corr_features if f != target_column]
+        
+        print(f"Признаки с низкой корреляцией: {low_corr_features}")
         
         # Также удаляем сильно коррелирующие между собой признаки
         corr_matrix = heart_df[numeric_columns].corr().abs()
@@ -316,17 +331,24 @@ def get_heart_attack_analysis():
         features_to_remove = list(set(low_corr_features + high_corr_features))
         features_kept = [f for f in numeric_columns if f not in features_to_remove]
         
+        print(f"Удаленные признаки: {features_to_remove}")
+        print(f"Оставшиеся признаки: {features_kept}")
+        
         # Подготовка данных
         X = heart_df[features_kept].copy()
-        y = heart_df['heartAttackRisk']
+        y = heart_df[target_column]
         
         # Кодирование категориальных признаков
-        categorical_columns = ['sex', 'diet', 'country', 'continent', 'hemisphere']
+        categorical_columns = ['Sex', 'Diet', 'Country', 'Continent', 'Hemisphere', 'Blood Pressure']
         for col in categorical_columns:
             if col in heart_df.columns:
                 le = LabelEncoder()
+                # Заменяем NaN на строку 'Unknown' перед кодированием
+                heart_df[col] = heart_df[col].fillna('Unknown')
                 heart_df[f'{col}_encoded'] = le.fit_transform(heart_df[col].astype(str))
                 X[f'{col}_encoded'] = heart_df[f'{col}_encoded']
+        
+        print(f"Признаки после кодирования: {X.columns.tolist()}")
         
         # Нормализация данных
         scaler = RobustScaler()
@@ -337,10 +359,12 @@ def get_heart_attack_analysis():
             X_scaled, y, test_size=0.2, random_state=42, stratify=y
         )
         
+        print(f"Размер train: {X_train.shape}, test: {X_test.shape}")
+        
         # Обучение моделей
         models = {
-            'Decision Tree': DecisionTreeClassifier(random_state=42),
-            'Random Forest': RandomForestClassifier(n_estimators=100, random_state=42),
+            'Decision Tree': DecisionTreeClassifier(random_state=42, max_depth=5),
+            'Random Forest': RandomForestClassifier(n_estimators=100, random_state=42, max_depth=5),
             'SVM': SVC(kernel='rbf', random_state=42, probability=True)
         }
         
@@ -348,6 +372,8 @@ def get_heart_attack_analysis():
         feature_names = X.columns.tolist()
         
         for name, model in models.items():
+            print(f"Обучение модели: {name}")
+            
             # Обучение
             model.fit(X_train, y_train)
             
@@ -365,6 +391,12 @@ def get_heart_attack_analysis():
                 'model_type': name,
                 'feature_importance': get_feature_importance(model, feature_names, name)
             }
+            
+            print(f"{name} - Train accuracy: {train_accuracy:.4f}, Test accuracy: {test_accuracy:.4f}")
+        
+        # Статистика по классам
+        class_distribution = heart_df[target_column].value_counts().to_dict()
+        positive_percentage = (class_distribution.get(1, 0) / len(heart_df)) * 100
         
         return {
             "preprocessing_info": {
@@ -378,29 +410,52 @@ def get_heart_attack_analysis():
             "models_results": results,
             "dataset_info": {
                 "total_samples": len(heart_df),
-                "positive_cases": heart_df['heartAttackRisk'].sum(),
-                "negative_cases": len(heart_df) - heart_df['heartAttackRisk'].sum(),
-                "positive_percentage": round(heart_df['heartAttackRisk'].mean() * 100, 2)
+                "positive_cases": class_distribution.get(1, 0),
+                "negative_cases": class_distribution.get(0, 0),
+                "positive_percentage": round(positive_percentage, 2)
             }
         }
         
     except Exception as e:
         print(f"Error in heart attack analysis: {e}")
+        import traceback
+        traceback.print_exc()
         return {"error": str(e)}
 
 def get_feature_importance(model, feature_names, model_name):
     """Получает важность признаков в зависимости от типа модели"""
-    if model_name == 'Decision Tree':
-        return dict(zip(feature_names, model.feature_importances_))
-    elif model_name == 'Random Forest':
-        return dict(zip(feature_names, model.feature_importances_))
-    elif model_name == 'SVM':
-        # Для SVM используем абсолютные значения весов
-        if hasattr(model, 'coef_'):
-            return dict(zip(feature_names, np.abs(model.coef_[0])))
+    try:
+        if model_name == 'Decision Tree' and hasattr(model, 'feature_importances_'):
+            importance_dict = dict(zip(feature_names, model.feature_importances_))
+            # Нормализуем значения
+            max_importance = max(importance_dict.values()) if importance_dict.values() else 1.0
+            if max_importance > 0:
+                return {k: v / max_importance for k, v in importance_dict.items()}
+            return importance_dict
+            
+        elif model_name == 'Random Forest' and hasattr(model, 'feature_importances_'):
+            importance_dict = dict(zip(feature_names, model.feature_importances_))
+            # Нормализуем значения
+            max_importance = max(importance_dict.values()) if importance_dict.values() else 1.0
+            if max_importance > 0:
+                return {k: v / max_importance for k, v in importance_dict.items()}
+            return importance_dict
+            
+        elif model_name == 'SVM' and hasattr(model, 'coef_'):
+            importance_dict = dict(zip(feature_names, np.abs(model.coef_[0])))
+            # Нормализуем значения
+            max_importance = max(importance_dict.values()) if importance_dict.values() else 1.0
+            if max_importance > 0:
+                return {k: v / max_importance for k, v in importance_dict.items()}
+            return importance_dict
+            
         else:
-            return {feature: 0 for feature in feature_names}
-    return {}
+            # Возвращаем равномерное распределение если не можем получить важность
+            return {feature: 1.0 / len(feature_names) for feature in feature_names}
+            
+    except Exception as e:
+        print(f"Error getting feature importance for {model_name}: {e}")
+        return {feature: 0.0 for feature in feature_names}
 
     # ОЧИСТКА ДАННЫХ ПЕРЕД ВОЗВРАТОМ
     return clean_json_data(result)
