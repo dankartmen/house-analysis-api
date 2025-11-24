@@ -16,9 +16,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Копируем код и ВСЕ данные
 COPY main.py .
-COPY kc_house_data.csv .
-COPY creditcard.csv .
-COPY houses.csv .
+#COPY kc_house_data.csv .
+#COPY creditcard.csv .
+#COPY houses.csv .
+COPY heart_attack_prediction_dataset.csv .
 
 # Запуск uvicorn (ASGI-сервер)
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
