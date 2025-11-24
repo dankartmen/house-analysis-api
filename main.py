@@ -9,6 +9,11 @@ from sklearn.model_selection import cross_val_score, StratifiedKFold
 from sklearn.pipeline import Pipeline
 import numpy as np
 import math
+from sklearn.preprocessing import RobustScaler, LabelEncoder
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score
 
 def clean_json_data(obj):
     """Рекурсивно очищает данные от некорректных float значений"""
@@ -284,5 +289,118 @@ def get_fraud_analysis():
         }
     }
     
+
+@app.get("/api/heart-attack-analysis")
+def get_heart_attack_analysis():
+    try:
+        # Загрузка данных
+        heart_df = pd.read_csv('heart_attack_prediction_dataset.csv')
+        
+        # Удаление некоррелирующих признаков
+        numeric_columns = ['age', 'cholesterol', 'heartRate', 'exerciseHoursPerWeek', 
+                          'stressLevel', 'sedentaryHoursPerDay', 'income', 'bmi', 
+                          'triglycerides', 'physicalActivityDaysPerWeek', 'sleepHoursPerDay']
+        
+        # Вычисляем корреляцию с целевой переменной
+        correlations = heart_df[numeric_columns + ['heartAttackRisk']].corr()['heartAttackRisk'].abs()
+        
+        # Удаляем признаки с низкой корреляцией (< 0.05)
+        low_corr_features = correlations[correlations < 0.05].index.tolist()
+        low_corr_features = [f for f in low_corr_features if f != 'heartAttackRisk']
+        
+        # Также удаляем сильно коррелирующие между собой признаки
+        corr_matrix = heart_df[numeric_columns].corr().abs()
+        upper_triangle = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+        high_corr_features = [column for column in upper_triangle.columns if any(upper_triangle[column] > 0.8)]
+        
+        features_to_remove = list(set(low_corr_features + high_corr_features))
+        features_kept = [f for f in numeric_columns if f not in features_to_remove]
+        
+        # Подготовка данных
+        X = heart_df[features_kept].copy()
+        y = heart_df['heartAttackRisk']
+        
+        # Кодирование категориальных признаков
+        categorical_columns = ['sex', 'diet', 'country', 'continent', 'hemisphere']
+        for col in categorical_columns:
+            if col in heart_df.columns:
+                le = LabelEncoder()
+                heart_df[f'{col}_encoded'] = le.fit_transform(heart_df[col].astype(str))
+                X[f'{col}_encoded'] = heart_df[f'{col}_encoded']
+        
+        # Нормализация данных
+        scaler = RobustScaler()
+        X_scaled = scaler.fit_transform(X)
+        
+        # Разделение на train/test
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_scaled, y, test_size=0.2, random_state=42, stratify=y
+        )
+        
+        # Обучение моделей
+        models = {
+            'Decision Tree': DecisionTreeClassifier(random_state=42),
+            'Random Forest': RandomForestClassifier(n_estimators=100, random_state=42),
+            'SVM': SVC(kernel='rbf', random_state=42, probability=True)
+        }
+        
+        results = {}
+        feature_names = X.columns.tolist()
+        
+        for name, model in models.items():
+            # Обучение
+            model.fit(X_train, y_train)
+            
+            # Предсказания
+            y_train_pred = model.predict(X_train)
+            y_test_pred = model.predict(X_test)
+            
+            # Метрики
+            train_accuracy = accuracy_score(y_train, y_train_pred)
+            test_accuracy = accuracy_score(y_test, y_test_pred)
+            
+            results[name] = {
+                'train_accuracy': round(train_accuracy, 4),
+                'test_accuracy': round(test_accuracy, 4),
+                'model_type': name,
+                'feature_importance': get_feature_importance(model, feature_names, name)
+            }
+        
+        return {
+            "preprocessing_info": {
+                "original_features": len(numeric_columns + categorical_columns),
+                "features_after_selection": len(feature_names),
+                "removed_features": features_to_remove,
+                "kept_features": feature_names,
+                "scaler_used": "RobustScaler",
+                "test_size": 0.2
+            },
+            "models_results": results,
+            "dataset_info": {
+                "total_samples": len(heart_df),
+                "positive_cases": heart_df['heartAttackRisk'].sum(),
+                "negative_cases": len(heart_df) - heart_df['heartAttackRisk'].sum(),
+                "positive_percentage": round(heart_df['heartAttackRisk'].mean() * 100, 2)
+            }
+        }
+        
+    except Exception as e:
+        print(f"Error in heart attack analysis: {e}")
+        return {"error": str(e)}
+
+def get_feature_importance(model, feature_names, model_name):
+    """Получает важность признаков в зависимости от типа модели"""
+    if model_name == 'Decision Tree':
+        return dict(zip(feature_names, model.feature_importances_))
+    elif model_name == 'Random Forest':
+        return dict(zip(feature_names, model.feature_importances_))
+    elif model_name == 'SVM':
+        # Для SVM используем абсолютные значения весов
+        if hasattr(model, 'coef_'):
+            return dict(zip(feature_names, np.abs(model.coef_[0])))
+        else:
+            return {feature: 0 for feature in feature_names}
+    return {}
+
     # ОЧИСТКА ДАННЫХ ПЕРЕД ВОЗВРАТОМ
     return clean_json_data(result)
