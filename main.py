@@ -494,6 +494,7 @@ async def get_customer_clustering():
         numeric_cols = customer_df.select_dtypes(include=[np.number]).columns.tolist()
         
         if len(numeric_cols) < 2:
+            print("Недостаточно числовых признаков для кластеризации(меньше 2)")
             return JSONResponse(
                 status_code=400,
                 content={
@@ -510,6 +511,7 @@ async def get_customer_clustering():
         X_clean = X[mask]
         
         if len(X_clean) < 10:
+            print("Слишком мало данных после очистки от NaN")
             return JSONResponse(
                 status_code=400,
                 content={
