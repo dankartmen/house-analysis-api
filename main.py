@@ -461,48 +461,76 @@ def get_feature_importance(model, feature_names, model_name):
     return clean_json_data(result)
 
 @app.get("/api/customer-clustering")
-def get_customer_clustering():
+async def get_customer_clustering():
     """
     Эндпоинт для кластеризации клиентов
     """
     try:
         # Загрузка данных
         try:
-            customer_df = pd.read_csv('customer_data.csv')
+            customer_df = pd.read_csv('customer_data.csv', encoding='utf-8')
         except FileNotFoundError:
-            return {
-                "error": "Файл customer_data.csv не найден. Пожалуйста, загрузите файл с данными.",
-                "file_required": True
-            }
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "Файл customer_data.csv не найден. Пожалуйста, загрузите файл с данными.",
+                    "file_required": True
+                }
+            )
+        except Exception as e:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": f"Ошибка чтения файла: {str(e)}",
+                    "details": "Проверьте кодировку и формат файла"
+                }
+            )
         
         print(f"Загружено {len(customer_df)} записей, {len(customer_df.columns)} признаков")
-        
-        # 1. Обучение моделей кластеризации на исходных данных
         
         # Выбираем только числовые признаки для кластеризации
         numeric_cols = customer_df.select_dtypes(include=[np.number]).columns.tolist()
         
         if len(numeric_cols) < 2:
-            return {
-                "error": "Недостаточно числовых признаков для кластеризации",
-                "available_columns": customer_df.columns.tolist()
-            }
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "Недостаточно числовых признаков для кластеризации",
+                    "available_columns": customer_df.columns.tolist(),
+                    "numeric_columns": numeric_cols
+                }
+            )
         
         X = customer_df[numeric_cols].values
         
-        # 2. Метод локтя для определения оптимального числа кластеров (K-means)
+        # Удаляем строки с NaN
+        mask = ~np.isnan(X).any(axis=1)
+        X_clean = X[mask]
+        
+        if len(X_clean) < 10:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "Слишком мало данных после очистки от NaN",
+                    "samples_after_clean": len(X_clean),
+                    "required_minimum": 10
+                }
+            )
+        
+        # 1. Метод локтя для определения оптимального числа кластеров
         wcss = []
         silhouette_scores = []
-        k_range = range(2, min(11, len(customer_df)))  # Ограничиваем максимальное k
+        max_k = min(10, len(X_clean) - 1)
+        k_range = list(range(2, max_k + 1))
         
         for k in k_range:
             try:
                 kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-                kmeans.fit(X)
+                kmeans.fit(X_clean)
                 wcss.append(float(kmeans.inertia_))
                 
                 if k > 1:
-                    silhouette = silhouette_score(X, kmeans.labels_)
+                    silhouette = silhouette_score(X_clean, kmeans.labels_)
                     silhouette_scores.append(float(silhouette))
                 else:
                     silhouette_scores.append(0.0)
@@ -513,42 +541,55 @@ def get_customer_clustering():
         
         # Определение оптимального k
         optimal_k = 3  # Значение по умолчанию
-        if len(wcss) > 1 and any(w > 0 for w in wcss):
+        if len(wcss) > 2:
             try:
-                # Простой алгоритм для нахождения "локтя"
-                elbow_index = 0
-                max_reduction = 0
-                for i in range(1, len(wcss)):
-                    reduction = wcss[i-1] - wcss[i]
-                    if reduction > max_reduction:
-                        max_reduction = reduction
-                        elbow_index = i
-                optimal_k = elbow_index + 2  # +2 потому что k начинается с 2
-                optimal_k = min(optimal_k, 6)  # Ограничиваем максимальное значение
+                # Находим "локоть" - точку, где снижение WCSS замедляется
+                diffs = [wcss[i-1] - wcss[i] for i in range(1, len(wcss))]
+                if diffs:
+                    # Нормализуем разницы
+                    diffs_norm = [d / max(diffs) for d in diffs]
+                    # Ищем точку, где разница становится меньше 0.5 от максимальной
+                    for i in range(len(diffs_norm)):
+                        if diffs_norm[i] < 0.3:
+                            optimal_k = i + 2
+                            break
             except:
                 optimal_k = 3
         
-        # 3. Обучение моделей кластеризации
+        optimal_k = min(optimal_k, 6)  # Ограничиваем
         
-        # 3.1 K-Means Clustering
+        # 2. Обучение моделей кластеризации
+        
+        # K-Means Clustering
         kmeans = KMeans(n_clusters=optimal_k, random_state=42, n_init=10)
-        kmeans_labels = kmeans.fit_predict(X)
+        kmeans_labels = kmeans.fit_predict(X_clean)
         
-        # 3.2 Agglomerative Clustering
+        # Agglomerative Clustering
         agglomerative = AgglomerativeClustering(n_clusters=optimal_k, linkage='ward')
-        agglomerative_labels = agglomerative.fit_predict(X)
+        agglomerative_labels = agglomerative.fit_predict(X_clean)
         
-        # 3.3 DBSCAN Clustering
-        dbscan = DBSCAN(eps=0.5, min_samples=5)
-        dbscan_labels = dbscan.fit_predict(X)
+        # DBSCAN Clustering
+        try:
+            # Автоматический подбор eps
+            from sklearn.neighbors import NearestNeighbors
+            neighbors = NearestNeighbors(n_neighbors=5)
+            neighbors_fit = neighbors.fit(X_clean)
+            distances, indices = neighbors_fit.kneighbors(X_clean)
+            distances = np.sort(distances[:, 4], axis=0)
+            
+            # Находим "колено" на графике расстояний
+            from kneed import KneeLocator
+            kneedle = KneeLocator(range(len(distances)), distances, S=1.0, curve='convex', direction='increasing')
+            eps_value = distances[kneedle.knee] if kneedle.knee else 0.5
+            
+            dbscan = DBSCAN(eps=eps_value, min_samples=5)
+            dbscan_labels = dbscan.fit_predict(X_clean)
+        except:
+            # Fallback параметры
+            dbscan = DBSCAN(eps=0.5, min_samples=5)
+            dbscan_labels = dbscan.fit_predict(X_clean)
         
-        n_clusters_dbscan = len(np.unique(dbscan_labels[dbscan_labels != -1]))
-        if n_clusters_dbscan <= 1:  # Если не нашел кластеры
-            # Пробуем другие параметры
-            dbscan = DBSCAN(eps=1.0, min_samples=3)
-            dbscan_labels = dbscan.fit_predict(X)
-        
-        # 4. Оценка качества кластеризации
+        # 3. Оценка качества кластеризации
         
         def evaluate_clustering(labels, X_data, method_name):
             """Оценка качества кластеризации"""
@@ -561,12 +602,16 @@ def get_customer_clustering():
                 'cluster_sizes': {}
             }
             
+            # Вычисляем метрики только если есть хотя бы 2 кластера
             if n_valid_clusters > 1:
                 try:
                     # Убираем шумовые точки для вычисления метрик
                     mask = labels != -1
-                    if np.sum(mask) > 1:
-                        silhouette = silhouette_score(X_data[mask], labels[mask])
+                    valid_labels = labels[mask]
+                    valid_X = X_data[mask]
+                    
+                    if len(np.unique(valid_labels)) > 1:
+                        silhouette = silhouette_score(valid_X, valid_labels)
                         metrics['silhouette_score'] = float(silhouette)
                     else:
                         metrics['silhouette_score'] = None
@@ -574,8 +619,8 @@ def get_customer_clustering():
                     metrics['silhouette_score'] = None
                 
                 try:
-                    if np.sum(mask) > 1:
-                        calinski = calinski_harabasz_score(X_data[mask], labels[mask])
+                    if len(np.unique(valid_labels)) > 1:
+                        calinski = calinski_harabasz_score(valid_X, valid_labels)
                         metrics['calinski_harabasz_score'] = float(calinski)
                     else:
                         metrics['calinski_harabasz_score'] = None
@@ -583,8 +628,8 @@ def get_customer_clustering():
                     metrics['calinski_harabasz_score'] = None
                 
                 try:
-                    if np.sum(mask) > 1:
-                        davies = davies_bouldin_score(X_data[mask], labels[mask])
+                    if len(np.unique(valid_labels)) > 1:
+                        davies = davies_bouldin_score(valid_X, valid_labels)
                         metrics['davies_bouldin_score'] = float(davies)
                     else:
                         metrics['davies_bouldin_score'] = None
@@ -603,14 +648,14 @@ def get_customer_clustering():
             return metrics
         
         # Оценка каждой модели
-        kmeans_evaluation = evaluate_clustering(kmeans_labels, X, 'K-Means')
-        agglomerative_evaluation = evaluate_clustering(agglomerative_labels, X, 'Agglomerative')
-        dbscan_evaluation = evaluate_clustering(dbscan_labels, X, 'DBSCAN')
+        kmeans_evaluation = evaluate_clustering(kmeans_labels, X_clean, 'K-Means')
+        agglomerative_evaluation = evaluate_clustering(agglomerative_labels, X_clean, 'Agglomerative')
+        dbscan_evaluation = evaluate_clustering(dbscan_labels, X_clean, 'DBSCAN')
         
-        # 5. Разведочный анализ данных по кластерам
+        # 4. Разведочный анализ данных по кластерам
         
-        # Добавляем метки кластеров в DataFrame
-        analysis_df = customer_df.copy()
+        # Создаем DataFrame для анализа
+        analysis_df = pd.DataFrame(X_clean, columns=numeric_cols[:X_clean.shape[1]])
         analysis_df['KMeans_Cluster'] = kmeans_labels
         analysis_df['Agglomerative_Cluster'] = agglomerative_labels
         analysis_df['DBSCAN_Cluster'] = dbscan_labels
@@ -624,43 +669,56 @@ def get_customer_clustering():
             if len(cluster_data) > 0:
                 # Вычисляем средние значения для числовых признаков
                 cluster_means = {}
-                for col in numeric_cols[:10]:  # Берем первые 10 признаков для анализа
-                    cluster_means[col] = float(cluster_data[col].mean())
+                for col in numeric_cols[:min(5, len(numeric_cols))]:  # Берем первые 5 признаков
+                    if col in cluster_data.columns:
+                        cluster_means[col] = float(cluster_data[col].mean())
                 
-                cluster_analysis[f'cluster_{cluster_num}'] = {
+                cluster_analysis[str(cluster_num)] = {
                     'size': int(len(cluster_data)),
                     'percentage': float(len(cluster_data) / len(analysis_df) * 100),
                     'mean_values': cluster_means
                 }
         
-        # 6. Подготовка данных для визуализации на фронтенде
+        # 5. Подготовка данных для визуализации
         
-        # Выбираем 2 наиболее важных признака для 2D визуализации
-        # Используем первые 2 числовых признака или с наибольшей дисперсией
-        if len(numeric_cols) >= 2:
-            # Выбираем признаки с наибольшей дисперсией
-            variances = {}
-            for col in numeric_cols:
-                variances[col] = float(analysis_df[col].var())
+        # Данные для 2D визуализации (используем PCA для снижения размерности)
+        try:
+            from sklearn.decomposition import PCA
+            pca = PCA(n_components=2)
+            X_pca = pca.fit_transform(X_clean)
             
-            sorted_vars = sorted(variances.items(), key=lambda x: x[1], reverse=True)
-            top_features = [sorted_vars[0][0], sorted_vars[1][0]] if len(sorted_vars) >= 2 else numeric_cols[:2]
-            
-            # Данные для 2D визуализации
             viz_data_2d = []
-            for idx, row in analysis_df.iterrows():
+            for i in range(len(X_pca)):
                 viz_data_2d.append({
-                    'x': float(row[top_features[0]]),
-                    'y': float(row[top_features[1]]),
-                    'kmeans_cluster': int(row['KMeans_Cluster']),
-                    'agglomerative_cluster': int(row['Agglomerative_Cluster']),
-                    'dbscan_cluster': int(row['DBSCAN_Cluster'])
+                    'x': float(X_pca[i, 0]),
+                    'y': float(X_pca[i, 1]),
+                    'kmeans_cluster': int(kmeans_labels[i]),
+                    'agglomerative_cluster': int(agglomerative_labels[i]),
+                    'dbscan_cluster': int(dbscan_labels[i]),
+                    'index': i
                 })
-        else:
+            
+            pca_variance = {
+                'pc1': float(pca.explained_variance_ratio_[0] * 100),
+                'pc2': float(pca.explained_variance_ratio_[1] * 100),
+                'total': float(sum(pca.explained_variance_ratio_) * 100)
+            }
+        except:
+            # Если PCA не работает, используем первые два признака
             viz_data_2d = []
-            top_features = numeric_cols if numeric_cols else []
+            if X_clean.shape[1] >= 2:
+                for i in range(len(X_clean)):
+                    viz_data_2d.append({
+                        'x': float(X_clean[i, 0]),
+                        'y': float(X_clean[i, 1]),
+                        'kmeans_cluster': int(kmeans_labels[i]),
+                        'agglomerative_cluster': int(agglomerative_labels[i]),
+                        'dbscan_cluster': int(dbscan_labels[i]),
+                        'index': i
+                    })
+            pca_variance = None
         
-        # 7. Подготовка метрик для графиков
+        # 6. Подготовка метрик для графиков
         elbow_data = []
         silhouette_data = []
         
@@ -668,52 +726,30 @@ def get_customer_clustering():
             if i < len(wcss) and i < len(silhouette_scores):
                 elbow_data.append({
                     'k': int(k),
-                    'wcss': wcss[i]
+                    'wcss': float(wcss[i])
                 })
                 silhouette_data.append({
                     'k': int(k),
-                    'silhouette': silhouette_scores[i]
+                    'silhouette': float(silhouette_scores[i])
                 })
         
-        # 8. Анализ распределения по кластерам
-        cluster_distributions = {}
-        
-        for method_name, labels, eval_metrics in [
-            ('kmeans', kmeans_labels, kmeans_evaluation),
-            ('agglomerative', agglomerative_labels, agglomerative_evaluation),
-            ('dbscan', dbscan_labels, dbscan_evaluation)
-        ]:
-            unique_labels, counts = np.unique(labels, return_counts=True)
-            distribution = []
-            for label, count in zip(unique_labels, counts):
-                distribution.append({
-                    'label': str(label),
-                    'count': int(count),
-                    'percentage': float(count / len(labels) * 100)
-                })
-            
-            cluster_distributions[method_name] = {
-                'distribution': distribution,
-                'metrics': eval_metrics
-            }
-        
-        # 9. Подготовка результата
+        # 7. Подготовка результата
         result = {
+            "success": True,
             "dataset_info": {
                 "total_samples": len(customer_df),
+                "samples_after_clean": len(X_clean),
                 "total_features": len(customer_df.columns),
                 "numeric_features": numeric_cols,
-                "all_features": customer_df.columns.tolist()
+                "optimal_k": optimal_k
             },
             "clustering_results": {
-                "optimal_k": optimal_k,
                 "elbow_method_data": elbow_data,
                 "silhouette_method_data": silhouette_data,
                 "models": {
                     "kmeans": {
                         "labels": [int(label) for label in kmeans_labels],
-                        "metrics": kmeans_evaluation,
-                        "centers": kmeans.cluster_centers_.tolist() if hasattr(kmeans, 'cluster_centers_') else []
+                        "metrics": kmeans_evaluation
                     },
                     "agglomerative": {
                         "labels": [int(label) for label in agglomerative_labels],
@@ -726,22 +762,14 @@ def get_customer_clustering():
                 }
             },
             "visualization_data": {
-                "scatter_2d": {
-                    "data": viz_data_2d,
-                    "features": top_features,
-                    "feature_names": top_features
-                },
-                "cluster_distributions": cluster_distributions
+                "scatter_2d": viz_data_2d,
+                "pca_variance": pca_variance,
+                "features_used": numeric_cols[:min(5, len(numeric_cols))]
             },
             "cluster_analysis": cluster_analysis,
             "interpretation": {
-                "summary": _generate_clustering_summary(
-                    kmeans_evaluation, 
-                    agglomerative_evaluation, 
-                    dbscan_evaluation,
-                    optimal_k
-                ),
-                "recommendations": _generate_cluster_insights(cluster_analysis, customer_df)
+                "best_model": _determine_best_model(kmeans_evaluation, agglomerative_evaluation, dbscan_evaluation),
+                "cluster_summary": _generate_cluster_summary(cluster_analysis)
             }
         }
         
@@ -751,61 +779,61 @@ def get_customer_clustering():
         print(f"Error in customer clustering: {e}")
         import traceback
         traceback.print_exc()
-        return {"error": f"Ошибка при кластеризации: {str(e)}"}
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": f"Внутренняя ошибка сервера: {str(e)}",
+                "success": False
+            }
+        )
 
-def _generate_clustering_summary(kmeans_eval, agglo_eval, dbscan_eval, optimal_k):
-    """Генерирует сводку по результатам кластеризации"""
-    summary = []
+def _determine_best_model(kmeans_eval, agglo_eval, dbscan_eval):
+    """Определяет лучшую модель на основе метрик"""
+    models = [
+        {"name": "K-Means", "eval": kmeans_eval},
+        {"name": "Agglomerative", "eval": agglo_eval},
+        {"name": "DBSCAN", "eval": dbscan_eval}
+    ]
     
-    summary.append(f"Оптимальное количество кластеров: {optimal_k}")
-    summary.append(f"K-Means создал {kmeans_eval['n_clusters']} кластеров")
-    summary.append(f"Agglomerative создал {agglo_eval['n_clusters']} кластеров")
+    # Фильтруем модели с валидными silhouette scores
+    valid_models = []
+    for model in models:
+        if model["eval"].get("silhouette_score") is not None:
+            valid_models.append(model)
     
-    if dbscan_eval['n_noise'] > 0:
-        summary.append(f"DBSCAN обнаружил {dbscan_eval['n_clusters']} кластеров и {dbscan_eval['n_noise']} шумовых точек")
+    if not valid_models:
+        return "Не удалось определить лучшую модель (все silhouette scores = None)"
+    
+    # Сортируем по silhouette_score (чем выше, тем лучше)
+    valid_models.sort(key=lambda x: x["eval"]["silhouette_score"], reverse=True)
+    
+    best_model = valid_models[0]
+    silhouette = best_model["eval"]["silhouette_score"]
+    
+    if silhouette > 0.7:
+        quality = "отличное"
+    elif silhouette > 0.5:
+        quality = "хорошее"
+    elif silhouette > 0.3:
+        quality = "удовлетворительное"
     else:
-        summary.append(f"DBSCAN создал {dbscan_eval['n_clusters']} кластеров")
+        quality = "плохое"
     
-    # Определяем лучшую модель по silhouette score
-    models_scores = []
-    if kmeans_eval.get('silhouette_score'):
-        models_scores.append(('K-Means', kmeans_eval['silhouette_score']))
-    if agglo_eval.get('silhouette_score'):
-        models_scores.append(('Agglomerative', agglo_eval['silhouette_score']))
-    if dbscan_eval.get('silhouette_score'):
-        models_scores.append(('DBSCAN', dbscan_eval['silhouette_score']))
+    return f"{best_model['name']} (Silhouette Score: {silhouette:.3f} - {quality} качество)"
+
+def _generate_cluster_summary(cluster_analysis):
+    """Генерирует сводку по кластерам"""
+    summary = []
+    total_clusters = len(cluster_analysis)
     
-    if models_scores:
-        best_model = max(models_scores, key=lambda x: x[1])
-        summary.append(f"Лучшая модель: {best_model[0]} (Silhouette Score: {best_model[1]:.3f})")
+    if total_clusters == 0:
+        return ["Нет данных для анализа кластеров"]
+    
+    summary.append(f"Найдено {total_clusters} кластеров:")
+    
+    for cluster_id, info in cluster_analysis.items():
+        size = info['size']
+        percentage = info['percentage']
+        summary.append(f"• Кластер {cluster_id}: {size} клиентов ({percentage:.1f}%)")
     
     return summary
-
-def _generate_cluster_insights(cluster_analysis, df):
-    """Генерирует инсайты по кластерам"""
-    insights = []
-    
-    for cluster_key, cluster_info in cluster_analysis.items():
-        if cluster_info['size'] > 0:
-            cluster_num = cluster_key.split('_')[1]
-            size = cluster_info['size']
-            percentage = cluster_info['percentage']
-            means = cluster_info['mean_values']
-            
-            insight = f"Кластер {cluster_num}: {size} клиентов ({percentage:.1f}%)"
-            
-            # Анализируем ключевые метрики, если они есть
-            key_metrics = ['Income', 'Recency', 'MntWines', 'MntMeatProducts']
-            found_metrics = []
-            
-            for metric in key_metrics:
-                if metric in means:
-                    value = means[metric]
-                    found_metrics.append(f"{metric}: {value:.0f}")
-            
-            if found_metrics:
-                insight += f" | {', '.join(found_metrics)}"
-            
-            insights.append(insight)
-    
-    return insights
