@@ -475,7 +475,7 @@ async def get_customer_clustering():
             return JSONResponse(
                 status_code=404,
                 content={
-                    "error": "Файл customer_data.csv не найден. Пожалуйста, загрузите файл с данными.",
+                    "error": "Файл marketing_campaign.csv не найден. Пожалуйста, загрузите файл с данными.",
                     "file_required": True
                 }
             )
@@ -489,10 +489,21 @@ async def get_customer_clustering():
             )
         
         print(f"Загружено {len(customer_df)} записей, {len(customer_df.columns)} признаков")
+    
         
         # Выбираем только числовые признаки для кластеризации
-        numeric_cols = customer_df.select_dtypes(include=[np.number]).columns.tolist()
+        numeric_cols = []
+        for col in customer_df.columns:
+            try:
+                # Пробуем преобразовать колонку в числовой тип
+                pd.to_numeric(customer_df[col])
+                numeric_cols.append(col)
+            except:
+                continue  # Пропускаем нечисловые колонки
         
+        print(f"Найдено числовых признаков: {len(numeric_cols)}")
+        print(f"Числовые признаки: {numeric_cols}")
+
         if len(numeric_cols) < 2:
             print("Недостаточно числовых признаков для кластеризации(меньше 2)")
             return JSONResponse(
