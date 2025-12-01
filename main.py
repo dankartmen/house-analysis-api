@@ -1,10 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import pandas as pd
+from sklearn.cluster import DBSCAN, AgglomerativeClustering, KMeans
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression, Lasso, Ridge, LogisticRegression
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, precision_score, recall_score, f1_score, roc_auc_score, roc_curve, classification_report
+from sklearn.metrics import calinski_harabasz_score, davies_bouldin_score, mean_squared_error, mean_absolute_error, r2_score, precision_score, recall_score, f1_score, roc_auc_score, roc_curve, classification_report, silhouette_score
 from sklearn.model_selection import cross_val_score, StratifiedKFold
 from sklearn.pipeline import Pipeline
 import numpy as np
@@ -468,7 +470,7 @@ async def get_customer_clustering():
     try:
         # Загрузка данных
         try:
-            customer_df = pd.read_csv('customer_data.csv', encoding='utf-8')
+            customer_df = pd.read_csv('marketing_campaign.csv', encoding='utf-8')
         except FileNotFoundError:
             return JSONResponse(
                 status_code=404,
