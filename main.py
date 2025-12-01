@@ -470,7 +470,7 @@ async def get_customer_clustering():
     try:
         # Загрузка данных
         try:
-            customer_df = pd.read_csv('marketing_campaign.csv')
+            customer_df = pd.read_csv('marketing_campaign.csv', sep='\t')
         except FileNotFoundError:
             return JSONResponse(
                 status_code=404,
