@@ -532,6 +532,10 @@ async def get_customer_clustering():
                 }
             )
         
+        scaler = StandardScaler()
+        X_normalized = scaler.fit_transform(X_clean)
+        X_clean = X_normalized
+
         # 1. Метод локтя для определения оптимального числа кластеров
         wcss = []
         silhouette_scores = []
