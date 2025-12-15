@@ -341,14 +341,16 @@ def get_heart_attack_analysis():
         y = heart_df[target_column]
         
         # Кодирование категориальных признаков
-        categorical_columns = ['Sex', 'Diet', 'Country', 'Continent', 'Hemisphere', 'Blood Pressure']
-        for col in categorical_columns:
+        heart_df['BP_Systolic'] = heart_df['Blood Pressure'].str.split('/').str[0].astype(float)
+        heart_df['BP_Diastolic'] = heart_df['Blood Pressure'].str.split('/').str[1].astype(float)
+        X['BP_Systolic'] = heart_df['BP_Systolic']
+        X['BP_Diastolic'] = heart_df['BP_Diastolic']
+
+        true_categorical = ['Sex', 'Diet', 'Country', 'Continent', 'Hemisphere']
+        for col in true_categorical:
             if col in heart_df.columns:
-                le = LabelEncoder()
-                # Заменяем NaN на строку 'Unknown' перед кодированием
-                heart_df[col] = heart_df[col].fillna('Unknown')
-                heart_df[f'{col}_encoded'] = le.fit_transform(heart_df[col].astype(str))
-                X[f'{col}_encoded'] = heart_df[f'{col}_encoded']
+                dummies = pd.get_dummies(heart_df[col], prefix=col, drop_first=True)
+                X = pd.concat([X, dummies], axis=1)
         
         print(f"Признаки после кодирования: {X.columns.tolist()}")
         
