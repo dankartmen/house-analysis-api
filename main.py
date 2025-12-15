@@ -346,8 +346,8 @@ def get_heart_attack_analysis():
         X['BP_Systolic'] = heart_df['BP_Systolic']
         X['BP_Diastolic'] = heart_df['BP_Diastolic']
 
-        true_categorical = ['Sex', 'Diet', 'Country', 'Continent', 'Hemisphere']
-        for col in true_categorical:
+        categorical_columns = ['Sex', 'Diet', 'Country', 'Continent', 'Hemisphere']
+        for col in categorical_columns:
             if col in heart_df.columns:
                 dummies = pd.get_dummies(heart_df[col], prefix=col, drop_first=True)
                 X = pd.concat([X, dummies], axis=1)
